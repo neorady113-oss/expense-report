@@ -1,4 +1,4 @@
-"""python3 -m report [--by-month] <file.csv>"""
+"""python3 -m report [--by-month] <file>  (.csv, .json, .xlsx or .xml)"""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from pathlib import Path
 
 from report.expenses import ReportError, monthly_totals, read_expenses, summary, totals_by_currency
 
-USAGE = "usage: python3 -m report [--by-month] <file.csv>"
+USAGE = "usage: python3 -m report [--by-month] <file>  (.csv, .json, .xlsx or .xml)"
 
 
 def format_by_month(totals: dict[str, dict[str, Decimal]]) -> str:

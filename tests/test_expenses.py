@@ -127,7 +127,7 @@ CSV_TEXT = (
     "2026-09-05,Lunch,9,EUR\n"
     "2026-09-06,Hotel,30.00,USD\n"
 )
-EXPECTED = "2026-09\n  EUR 9\n  USD 30.00\n\n2026-10\n  USD 12.50\n"
+BY_MONTH_EXPECTED = "2026-09\n  EUR 9\n  USD 30.00\n\n2026-10\n  USD 12.50\n"
 
 
 class CliByMonth(unittest.TestCase):
@@ -137,12 +137,12 @@ class CliByMonth(unittest.TestCase):
     def test_flag_before_path(self) -> None:
         out = self.run_cli("--by-month", str(write_csv(CSV_TEXT)))
         self.assertEqual(out.returncode, 0, out.stderr)
-        self.assertEqual(out.stdout.replace("\r\n", "\n"), EXPECTED)
+        self.assertEqual(out.stdout.replace("\r\n", "\n"), BY_MONTH_EXPECTED)
 
     def test_flag_after_path(self) -> None:
         out = self.run_cli(str(write_csv(CSV_TEXT)), "--by-month")
         self.assertEqual(out.returncode, 0, out.stderr)
-        self.assertEqual(out.stdout.replace("\r\n", "\n"), EXPECTED)
+        self.assertEqual(out.stdout.replace("\r\n", "\n"), BY_MONTH_EXPECTED)
 
     def test_without_flag_unchanged(self) -> None:
         out = self.run_cli(str(write_csv(CSV_TEXT)))
@@ -180,6 +180,119 @@ class Cli(unittest.TestCase):
 
     def test_bad_file_exits_1(self) -> None:
         self.assertEqual(self.run_cli("missing.csv").returncode, 1)
+
+
+NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+EXPECTED = [
+    Expense(date(2026, 10, 3), "Taxi", Decimal("12.50"), "USD"),
+    Expense(date(2026, 10, 5), "Lunch", Decimal("9"), "EUR"),
+]
+
+
+def write_file(name: str, text: str) -> Path:
+    path = Path(tempfile.mkdtemp()) / name
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def json_text(amount: str = "12.50", day: str = "2026-10-03") -> str:
+    return (
+        '[{"date": "%s", "description": "Taxi", "amount": %s, "currency": "USD"},'
+        ' {"date": "2026-10-05", "description": "Lunch", "amount": 9, "currency": "EUR"}]' % (day, amount)
+    )
+
+
+def xml_text(amount: str = "<amount>12.50</amount>") -> str:
+    return (
+        "<expenses><expense><date>2026-10-03</date><description>Taxi</description>"
+        f"{amount}<currency>USD</currency></expense>"
+        "<expense><date>2026-10-05</date><description>Lunch</description>"
+        "<amount>9</amount><currency>EUR</currency></expense></expenses>"
+    )
+
+
+def write_xlsx(amount: str = "12.5", day: str = "2026-10-03") -> Path:
+    import zipfile
+
+    strings = ["date", "description", "amount", "currency", day, "Taxi", "USD", "2026-10-05", "Lunch", "EUR"]
+    sst = f'<sst xmlns="{NS}">' + "".join(f"<si><t>{s}</t></si>" for s in strings) + "</sst>"
+
+    def s(ref: str, i: int) -> str:
+        return f'<c r="{ref}" t="s"><v>{i}</v></c>'
+
+    sheet = (
+        f'<worksheet xmlns="{NS}"><sheetData>'
+        f"<row r=\"1\">{s('A1', 0)}{s('B1', 1)}{s('C1', 2)}{s('D1', 3)}</row>"
+        f"<row r=\"2\">{s('A2', 4)}{s('B2', 5)}<c r=\"C2\"><v>{amount}</v></c>{s('D2', 6)}</row>"
+        f"<row r=\"3\">{s('A3', 7)}{s('B3', 8)}<c r=\"C3\"><v>9</v></c>{s('D3', 9)}</row>"
+        "</sheetData></worksheet>"
+    )
+    path = Path(tempfile.mkdtemp()) / "data.xlsx"
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("xl/sharedStrings.xml", sst)
+        z.writestr("xl/worksheets/sheet1.xml", sheet)
+    return path
+
+
+class Formats(unittest.TestCase):
+    def test_json(self) -> None:
+        self.assertEqual(read_expenses(write_file("d.json", json_text())), EXPECTED)
+
+    def test_json_bad_date_names_line(self) -> None:
+        with self.assertRaisesRegex(ReportError, "line 2"):
+            read_expenses(write_file("d.json", json_text(day="nope")))
+
+    def test_json_invalid_or_not_array(self) -> None:
+        with self.assertRaises(ReportError):
+            read_expenses(write_file("d.json", "{not json"))
+        with self.assertRaises(ReportError):
+            read_expenses(write_file("d.json", "{}"))
+
+    def test_xml(self) -> None:
+        self.assertEqual(read_expenses(write_file("d.xml", xml_text())), EXPECTED)
+
+    def test_xml_missing_amount_names_line(self) -> None:
+        with self.assertRaisesRegex(ReportError, "line 2"):
+            read_expenses(write_file("d.xml", xml_text(amount="")))
+
+    def test_xml_malformed(self) -> None:
+        with self.assertRaises(ReportError):
+            read_expenses(write_file("d.xml", "<expenses>"))
+
+    def test_xlsx(self) -> None:
+        self.assertEqual(read_expenses(write_xlsx()), EXPECTED)
+
+    def test_xlsx_bad_value_names_line(self) -> None:
+        with self.assertRaisesRegex(ReportError, "line 2"):
+            read_expenses(write_xlsx(day="bad"))
+
+    def test_xlsx_not_a_zip(self) -> None:
+        with self.assertRaises(ReportError):
+            read_expenses(write_file("d.xlsx", "plain text"))
+
+    def test_extension_case_insensitive(self) -> None:
+        self.assertEqual(read_expenses(write_file("DATA.JSON", json_text())), EXPECTED)
+
+    def test_unsupported_extension(self) -> None:
+        for name in ("d.txt", "d.xls"):
+            with self.assertRaisesRegex(ReportError, "unsupported"):
+                read_expenses(write_file(name, "x"))
+
+    def test_same_summary_in_all_formats(self) -> None:
+        csv_path = write_csv("date,description,amount,currency\n2026-10-03,Taxi,12.50,USD\n2026-10-05,Lunch,9,EUR\n")
+        paths = [csv_path, write_file("d.json", json_text()), write_file("d.xml", xml_text()), write_xlsx()]
+        self.assertEqual(len({summary(read_expenses(p)) for p in paths}), 1)
+
+    def test_cli_json(self) -> None:
+        path = write_file("d.json", json_text())
+        out = subprocess.run([sys.executable, "-m", "report", str(path)], capture_output=True, text=True)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertIn("2 expenses from", out.stdout)
+
+    def test_cli_unsupported_exits_1(self) -> None:
+        path = write_file("d.txt", "x")
+        out = subprocess.run([sys.executable, "-m", "report", str(path)], capture_output=True, text=True)
+        self.assertEqual(out.returncode, 1)
 
 
 if __name__ == "__main__":
