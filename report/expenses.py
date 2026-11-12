@@ -46,6 +46,14 @@ def totals_by_currency(expenses: list[Expense]) -> list[str]:
     return [f"{code} {total.quantize(cent, rounding=ROUND_HALF_UP)}" for code, total in sorted(totals.items())]
 
 
+def monthly_totals(expenses: list[Expense]) -> dict[str, dict[str, Decimal]]:
+    raw: dict[str, dict[str, Decimal]] = {}
+    for e in expenses:
+        month = raw.setdefault(e.day.strftime("%Y-%m"), {})
+        month[e.currency] = month.get(e.currency, Decimal(0)) + e.amount
+    return {m: dict(sorted(raw[m].items())) for m in sorted(raw)}
+
+
 def summary(expenses: list[Expense]) -> str:
     if not expenses:
         return "No expenses."
